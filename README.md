@@ -15,7 +15,7 @@ A no-bullshit Substance Painter plugin that speeds up your layer workflow.
 
 ## Installation
 
-1. Copy `stackslayer.py` to your SP plugins folder:
+1. Copy `stack_slayer.py` and `plugin.json` to your SP plugins folder:
    - **Windows:** `Documents/Adobe/Adobe Substance 3D Painter/python/plugins/`
    - **Mac:** `Documents/Adobe/Adobe Substance 3D Painter/python/plugins/`
    - **Linux:** `Documents/Adobe/Adobe Substance 3D Painter/python/plugins/`
