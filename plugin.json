@@ -1,0 +1,7 @@
+{
+  "type":        "python",
+  "name":        "Stack Slayer",
+  "version":     "1.0.0",
+  "entry_point": "stack_slayer.py",
+  "autostart":   true
+}
