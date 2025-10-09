@@ -4,10 +4,11 @@ import substance_painter.ui
 from substance_painter.ui import UIMode
 import substance_painter.layerstack as layerstack
 import substance_painter.textureset as textureset
+import substance_painter.resource as resource
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QHBoxLayout, QGridLayout, 
-    QCheckBox, QApplication, QToolButton, QSizePolicy
+    QCheckBox, QApplication, QToolButton, QSizePolicy, QLabel
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor
@@ -16,13 +17,14 @@ from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor
 _plugin_refs = []
 
 class IconButton(QToolButton):
-    """Custom icon button with optional text."""
-    def __init__(self, text, icon_char, normal_callback, ctrl_callback=None):
+    """Custom icon button with optional text and modifier key support."""
+    def __init__(self, text, icon_char, normal_callback, ctrl_callback=None, shift_callback=None):
         super().__init__()
         self.button_text = text
         self.icon_char = icon_char
         self.normal_callback = normal_callback
         self.ctrl_callback = ctrl_callback
+        self.shift_callback = shift_callback
         self.show_text = True
         
         self.setMinimumSize(50, 50)
@@ -30,7 +32,6 @@ class IconButton(QToolButton):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         
-        # Create simple icon
         self._create_icon()
         self.setText(text)
         self.clicked.connect(self._handle_click)
@@ -38,7 +39,7 @@ class IconButton(QToolButton):
     def _create_icon(self):
         """Create a simple text-based icon."""
         pixmap = QPixmap(32, 32)
-        pixmap.fill(QColor(0, 0, 0, 0))  # Transparent
+        pixmap.fill(QColor(0, 0, 0, 0))
         
         painter = QPainter(pixmap)
         painter.setPen(QColor(200, 200, 200))
@@ -48,10 +49,14 @@ class IconButton(QToolButton):
         self.setIcon(QIcon(pixmap))
         
     def _handle_click(self):
-        """Handle button clicks with Ctrl detection."""
-        ctrl_held = QApplication.keyboardModifiers() & Qt.ControlModifier
-        if ctrl_held and self.ctrl_callback:
+        """Handle button clicks with Ctrl/Shift detection."""
+        modifiers = QApplication.keyboardModifiers()
+        
+        # Check Ctrl first, then Shift, then default
+        if modifiers & Qt.ControlModifier and self.ctrl_callback:
             self.ctrl_callback()
+        elif modifiers & Qt.ShiftModifier and self.shift_callback:
+            self.shift_callback()
         else:
             self.normal_callback()
             
@@ -66,7 +71,7 @@ class IconButton(QToolButton):
             self.setToolButtonStyle(Qt.ToolButtonIconOnly)
 
 class StackSlayer(QWidget):
-    """StackSlayer with icon button layout."""
+    """StackSlayer with categorized layout."""
     
     def __init__(self):
         super().__init__()
@@ -85,37 +90,73 @@ class StackSlayer(QWidget):
         settings_layout.addStretch()
         layout.addLayout(settings_layout)
         
-        # Button grid
-        grid = QGridLayout()
-        grid.setSpacing(3)
+        # === FILL LAYERS SECTION ===
+        fill_label = QLabel("Fill Layers")
+        fill_label.setStyleSheet("font-weight: bold; margin-top: 5px;")
+        layout.addWidget(fill_label)
         
-        # Fill buttons (row 0)
+        fill_grid = QGridLayout()
+        fill_grid.setSpacing(3)
+        
+        # Row 0: Color, Rough, Height
         self.color_btn = IconButton(
             "Color", "🎨",
-            lambda: self._add_fill_layer("Color", True),
-            lambda: self._add_fill_layer("Color", False)
+            lambda: self._add_fill_layer("Color", None),
+            lambda: self._add_fill_layer("Color", False),
+            lambda: self._add_fill_layer("Color", True)
         )
-        self.color_btn.setToolTip("Color Fill\nClick: White mask | Ctrl+Click: Black mask")
+        self.color_btn.setToolTip("Color Fill\nClick: No mask | Ctrl: Black mask | Shift: White mask")
         
         self.rough_btn = IconButton(
             "Rough", "🔧", 
-            lambda: self._add_fill_layer("Roughness", True),
-            lambda: self._add_fill_layer("Roughness", False)
+            lambda: self._add_fill_layer("Roughness", None),
+            lambda: self._add_fill_layer("Roughness", False),
+            lambda: self._add_fill_layer("Roughness", True)
         )
-        self.rough_btn.setToolTip("Roughness Fill\nClick: White mask | Ctrl+Click: Black mask")
+        self.rough_btn.setToolTip("Roughness Fill\nClick: No mask | Ctrl: Black mask | Shift: White mask")
         
         self.height_btn = IconButton(
             "Height", "⛰️",
-            lambda: self._add_fill_layer("Height", True), 
-            lambda: self._add_fill_layer("Height", False)
+            lambda: self._add_fill_layer("Height", None),
+            lambda: self._add_fill_layer("Height", False),
+            lambda: self._add_fill_layer("Height", True)
         )
-        self.height_btn.setToolTip("Height Fill\nClick: White mask | Ctrl+Click: Black mask")
+        self.height_btn.setToolTip("Height Fill\nClick: No mask | Ctrl: Black mask | Shift: White mask")
         
-        grid.addWidget(self.color_btn, 0, 0)
-        grid.addWidget(self.rough_btn, 0, 1)
-        grid.addWidget(self.height_btn, 0, 2)
+        fill_grid.addWidget(self.color_btn, 0, 0)
+        fill_grid.addWidget(self.rough_btn, 0, 1)
+        fill_grid.addWidget(self.height_btn, 0, 2)
         
-        # Filter buttons (row 1)
+        # Row 1: Metal, Normal
+        self.metal_btn = IconButton(
+            "Metal", "⚡",
+            lambda: self._add_fill_layer("Metallic", None),
+            lambda: self._add_fill_layer("Metallic", False),
+            lambda: self._add_fill_layer("Metallic", True)
+        )
+        self.metal_btn.setToolTip("Metallic Fill\nClick: No mask | Ctrl: Black mask | Shift: White mask")
+        
+        self.normal_btn = IconButton(
+            "Normal", "🔷",
+            lambda: self._add_fill_layer("Normal", None),
+            lambda: self._add_fill_layer("Normal", False),
+            lambda: self._add_fill_layer("Normal", True)
+        )
+        self.normal_btn.setToolTip("Normal Fill\nClick: No mask | Ctrl: Black mask | Shift: White mask")
+        
+        fill_grid.addWidget(self.metal_btn, 1, 0)
+        fill_grid.addWidget(self.normal_btn, 1, 1)
+        
+        layout.addLayout(fill_grid)
+        
+        # === EFFECTS SECTION ===
+        effects_label = QLabel("Effects (select layer first)")
+        effects_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        layout.addWidget(effects_label)
+        
+        effects_grid = QGridLayout()
+        effects_grid.setSpacing(3)
+        
         self.hsl_btn = IconButton(
             "HSL", "🌈",
             self._add_hsl_filter
@@ -128,36 +169,26 @@ class StackSlayer(QWidget):
         )
         self.levels_btn.setToolTip("Add Levels Filter to selected layer")
         
-        # Extra fill buttons
-        self.metal_btn = IconButton(
-            "Metal", "⚡",
-            lambda: self._add_fill_layer("Metallic", True),
-            lambda: self._add_fill_layer("Metallic", False)
+        self.blur_btn = IconButton(
+            "Blur", "💫",
+            self._add_blur_filter
         )
-        self.metal_btn.setToolTip("Metallic Fill\nClick: White mask | Ctrl+Click: Black mask")
+        self.blur_btn.setToolTip("Add Blur Filter to selected layer")
         
-        grid.addWidget(self.hsl_btn, 1, 0)
-        grid.addWidget(self.levels_btn, 1, 1)
-        grid.addWidget(self.metal_btn, 1, 2)
+        effects_grid.addWidget(self.hsl_btn, 0, 0)
+        effects_grid.addWidget(self.levels_btn, 0, 1)
+        effects_grid.addWidget(self.blur_btn, 0, 2)
         
-        # Normal fill button (row 2)
-        self.normal_btn = IconButton(
-            "Normal", "🔷",
-            lambda: self._add_fill_layer("Normal", True),
-            lambda: self._add_fill_layer("Normal", False)
-        )
-        self.normal_btn.setToolTip("Normal Fill\nClick: White mask | Ctrl+Click: Black mask")
+        layout.addLayout(effects_grid)
         
-        grid.addWidget(self.normal_btn, 2, 0)
-        
-        layout.addLayout(grid)
         layout.addStretch()
         self.setLayout(layout)
         
         # Store button references for text toggle
         self.buttons = [
             self.color_btn, self.rough_btn, self.height_btn,
-            self.hsl_btn, self.levels_btn, self.metal_btn, self.normal_btn
+            self.metal_btn, self.normal_btn,
+            self.hsl_btn, self.levels_btn, self.blur_btn
         ]
 
     def _toggle_text(self, show):
@@ -165,12 +196,18 @@ class StackSlayer(QWidget):
         for btn in self.buttons:
             btn.set_show_text(show)
 
-    def _add_fill_layer(self, channel_name, white_mask=True):
-        """Add fill layer with proper channel activation."""
-        mask_type = "white" if white_mask else "black"
-        print(f"➕ Adding {channel_name} fill layer w/ {mask_type} mask…")
+    def _add_fill_layer(self, channel_name, mask_type=None):
+        """
+        Add fill layer with proper channel activation.
         
-        # Channel mapping - THE FIX
+        Args:
+            channel_name: The channel to activate
+            mask_type: None (no mask), True (white mask), False (black mask)
+        """
+        mask_desc = "no mask" if mask_type is None else ("white mask" if mask_type else "black mask")
+        print(f"➕ Adding {channel_name} fill layer w/ {mask_desc}…")
+        
+        # Channel mapping
         channel_mapping = {
             "Color": textureset.ChannelType.BaseColor,
             "Roughness": textureset.ChannelType.Roughness, 
@@ -180,36 +217,38 @@ class StackSlayer(QWidget):
         }
         
         try:
-            # Get active stack
+            # Get active stack and insert position at top
             stack = textureset.get_active_stack()
-            root_nodes = layerstack.get_root_layer_nodes(stack)
+            position = layerstack.InsertPosition.from_textureset_stack(stack)
             
-            # Set insert position
-            if root_nodes:
-                first_node = root_nodes[0]
-                position = layerstack.InsertPosition(first_node.uid(), None)
-            else:
-                position = layerstack.InsertPosition()
-            
-            # Create fill layer
-            layer_uid = layerstack.insert_fill(position)
-            layer_node = layerstack.get_node_by_uid(layer_uid)
+            # Create fill layer (returns node directly)
+            layer_node = layerstack.insert_fill(position)
             
             # Set name
             layer_node.set_name(f"{channel_name} Fill")
             
-            # ACTIVATE THE CHANNEL - THIS IS THE KEY FIX
+            # ACTIVATE CHANNEL
             if channel_name in channel_mapping:
                 layer_node.active_channels = {channel_mapping[channel_name]}
                 print(f"🎯 Activated {channel_name} channel")
             
-            # Add mask
-            if white_mask:
-                layer_node.add_mask(layerstack.MaskBackground.White)
-            else:
-                layer_node.add_mask(layerstack.MaskBackground.Black)
+            # SET DEFAULT WHITE COLOR
+            import substance_painter.colormanagement as colormanagement
+            white = colormanagement.Color(1.0, 1.0, 1.0)
+            if channel_name in channel_mapping:
+                layer_node.set_source(channel_mapping[channel_name], white)
+                print(f"🎨 Set white color")
             
-            print(f"✅ {channel_name} fill layer created with {mask_type} mask")
+            # ADD MASK
+            if mask_type is not None:
+                if mask_type:
+                    layer_node.add_mask(layerstack.MaskBackground.White)
+                    print(f"🎭 Added white mask")
+                else:
+                    layer_node.add_mask(layerstack.MaskBackground.Black)
+                    print(f"🎭 Added black mask")
+            
+            print(f"✅ {channel_name} fill layer created")
             
         except Exception as e:
             import traceback
@@ -217,7 +256,7 @@ class StackSlayer(QWidget):
             print(f"🔧 Traceback: {traceback.format_exc()}")
 
     def _add_hsl_filter(self):
-        """Add HSL filter to selected layer."""
+        """Add HSL filter to selected layer's content stack."""
         try:
             stack = textureset.get_active_stack()
             selected_nodes = layerstack.get_selected_nodes(stack)
@@ -225,16 +264,34 @@ class StackSlayer(QWidget):
             if not selected_nodes:
                 print("⚠️ No layer selected! Select a layer first.")
                 return
-                
-            print("➕ Adding HSL filter…")
-            # TODO: Implement HSL filter addition
+            
+            selected_layer = selected_nodes[0]
+            print(f"➕ Adding HSL filter to {selected_layer.get_name()}…")
+            
+            # Find HSL filter resource
+            hsl_resources = resource.search("u:filter n:hsl")
+            if not hsl_resources:
+                print("❌ HSL filter not found in resources")
+                return
+            
+            # Insert into content stack
+            position = layerstack.InsertPosition.inside_node(selected_layer, layerstack.NodeStack.Content)
+            filter_node = layerstack.insert_filter_effect(position, hsl_resources[0].identifier())
+            
+            # Match channels to parent layer
+            if hasattr(selected_layer, 'active_channels'):
+                filter_node.active_channels = selected_layer.active_channels
+                print(f"🎯 Matched channels: {filter_node.active_channels}")
+            
             print("✅ HSL filter added")
             
         except Exception as e:
+            import traceback
             print(f"❌ Error adding HSL filter: {e}")
+            print(f"🔧 Traceback: {traceback.format_exc()}")
 
     def _add_levels_filter(self):
-        """Add Levels filter to selected layer.""" 
+        """Add Levels effect to selected layer's content stack."""
         try:
             stack = textureset.get_active_stack()
             selected_nodes = layerstack.get_selected_nodes(stack)
@@ -242,26 +299,90 @@ class StackSlayer(QWidget):
             if not selected_nodes:
                 print("⚠️ No layer selected! Select a layer first.")
                 return
-                
-            print("➕ Adding Levels filter…")
-            # TODO: Implement Levels filter addition
-            print("✅ Levels filter added")
+            
+            selected_layer = selected_nodes[0]
+            print(f"➕ Adding Levels filter to {selected_layer.get_name()}…")
+            
+            # Insert levels effect
+            position = layerstack.InsertPosition.inside_node(selected_layer, layerstack.NodeStack.Content)
+            levels_node = layerstack.insert_levels_effect(position)
+            
+            # Set affected channel to match first active channel of parent
+            if hasattr(selected_layer, 'active_channels') and selected_layer.active_channels:
+                first_channel = list(selected_layer.active_channels)[0]
+                levels_node.affected_channel = first_channel
+                print(f"🎯 Set affected channel: {first_channel}")
+            
+            print("✅ Levels effect added")
             
         except Exception as e:
+            import traceback
             print(f"❌ Error adding Levels filter: {e}")
+            print(f"🔧 Traceback: {traceback.format_exc()}")
+
+    def _add_blur_filter(self):
+        """Add Blur filter to selected layer's content stack."""
+        try:
+            stack = textureset.get_active_stack()
+            selected_nodes = layerstack.get_selected_nodes(stack)
+            
+            if not selected_nodes:
+                print("⚠️ No layer selected! Select a layer first.")
+                return
+            
+            selected_layer = selected_nodes[0]
+            print(f"➕ Adding Blur filter to {selected_layer.get_name()}…")
+            
+            # Find Blur filter - try different search patterns
+            blur_resources = resource.search("u:filter n:blur")
+            if not blur_resources:
+                # Try with equals sign for exact match
+                blur_resources = resource.search('s:starterassets u:filter n:Blur=')
+            
+            if not blur_resources:
+                print("❌ Blur filter not found in resources")
+                return
+            
+            # Insert into content stack
+            position = layerstack.InsertPosition.inside_node(selected_layer, layerstack.NodeStack.Content)
+            filter_node = layerstack.insert_filter_effect(position, blur_resources[0].identifier())
+            
+            # Match channels to parent layer
+            if hasattr(selected_layer, 'active_channels'):
+                filter_node.active_channels = selected_layer.active_channels
+                print(f"🎯 Matched channels: {filter_node.active_channels}")
+            
+            print("✅ Blur filter added")
+            
+        except Exception as e:
+            import traceback
+            print(f"❌ Error adding Blur filter: {e}")
+            print(f"🔧 Traceback: {traceback.format_exc()}")
 
 def start_plugin():
-    """Start the StackSlayer plugin."""
-    print("🔌 Starting StackSlayer…")
+    """Initialize and show the plugin."""
+    global _plugin_refs
+    
+    # Create widget
     widget = StackSlayer()
-    dock = substance_painter.ui.add_dock_widget(
-        widget,
-        UIMode.Edition | UIMode.Baking
-    )
-    _plugin_refs.extend([widget, dock])
-    print("🎉 StackSlayer started!")
+    
+    # Dock it
+    substance_painter.ui.add_dock_widget(widget, UIMode.Edition)
+    
+    # Keep reference
+    _plugin_refs.append(widget)
+    
+    print("🚀 StackSlayer loaded")
 
 def close_plugin():
-    """Close the StackSlayer plugin."""
-    print("🛑 Closing StackSlayer…")
+    """Clean up when plugin is closed."""
+    global _plugin_refs
+    
+    for widget in _plugin_refs:
+        substance_painter.ui.delete_ui_element(widget)
+    
     _plugin_refs.clear()
+    print("👋 StackSlayer unloaded")
+
+if __name__ == "__main__":
+    start_plugin()
