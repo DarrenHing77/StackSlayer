@@ -1,0 +1,8 @@
+{
+    "hotkeys": {
+        "cycle_texture_set_up": "Ctrl+Shift+S",
+        "cycle_texture_set_down": "Ctrl+Shift+E",
+        "cycle_layer_up": "Shift+S",
+        "cycle_layer_down": "Shift+E"
+    }
+}

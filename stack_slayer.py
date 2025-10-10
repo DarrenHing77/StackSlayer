@@ -1,233 +1,559 @@
-# dh_sp_tools.py
+# stack_slayer.py
 
 import substance_painter.ui
 from substance_painter.ui import UIMode
 import substance_painter.layerstack as layerstack
 import substance_painter.textureset as textureset
+import substance_painter.resource as resource
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QToolButton,
-    QScrollArea, QLabel, QGridLayout, QHBoxLayout, QSizePolicy
+    QWidget, QVBoxLayout, QPushButton, QHBoxLayout, QGridLayout, 
+    QCheckBox, QApplication, QLabel
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QMouseEvent
 
-# keep refs alive so Python GC doesn't kill our widgets
+# Keep refs alive so Python GC doesn't kill our widgets
 _plugin_refs = []
 
-class CtrlClickButton(QPushButton):
-    """Custom button that detects Ctrl+click for alternate behavior."""
-    def __init__(self, text, normal_callback, ctrl_callback):
+class ModifierButton(QPushButton):
+    """Button that supports Ctrl/Shift modifiers."""
+    def __init__(self, text, normal_callback, ctrl_callback=None, shift_callback=None):
         super().__init__(text)
         self.normal_callback = normal_callback
         self.ctrl_callback = ctrl_callback
+        self.shift_callback = shift_callback
         self.clicked.connect(self._handle_click)
         
     def _handle_click(self):
-        # Check if Ctrl key was held during click
-        modifiers = self.parent().parent().parent().parent().keyboardGrabber()
-        if hasattr(modifiers, 'modifiers'):
-            ctrl_held = modifiers.modifiers() & Qt.ControlModifier
-        else:
-            # Fallback: check application-wide modifiers
-            from PySide6.QtWidgets import QApplication
-            ctrl_held = QApplication.keyboardModifiers() & Qt.ControlModifier
-            
-        if ctrl_held:
+        """Handle button clicks with Ctrl/Shift detection."""
+        modifiers = QApplication.keyboardModifiers()
+        
+        if modifiers & Qt.ControlModifier and self.ctrl_callback:
             self.ctrl_callback()
+        elif modifiers & Qt.ShiftModifier and self.shift_callback:
+            self.shift_callback()
         else:
             self.normal_callback()
 
-class CollapsibleCategory(QWidget):
-    """Custom collapsible section for grouping UI elements."""
-    def __init__(self, title, parent=None):
-        super().__init__(parent)
-        self.main_layout = QVBoxLayout(self)
-        self.main_layout.setContentsMargins(0,0,0,0)
-
-        self.header_layout = QHBoxLayout()
-        self.toggle_button = QToolButton()
-        self.toggle_button.setCheckable(True)
-        self.toggle_button.setChecked(True)
-        self.toggle_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.toggle_button.setArrowType(Qt.DownArrow)
-        self.toggle_button.clicked.connect(self.toggle)
-
-        self.label = QLabel(title)
-        self.label.setStyleSheet("font-weight: bold;")
-        self.header_layout.addWidget(self.toggle_button)
-        self.header_layout.addWidget(self.label)
-        self.header_layout.addStretch()
-
-        self.content_area = QWidget()
-        self.content_layout = QGridLayout(self.content_area)
-        self.content_layout.setContentsMargins(10,0,0,0)
-
-        self.main_layout.addLayout(self.header_layout)
-        self.main_layout.addWidget(self.content_area)
-
-    def add_widget(self, widget, row, col):
-        self.content_layout.addWidget(widget, row, col)
-
-    def toggle(self):
-        vis = self.toggle_button.isChecked()
-        self.content_area.setVisible(vis)
-        self.toggle_button.setArrowType(Qt.DownArrow if vis else Qt.RightArrow)
-
-class DHSPTools(QWidget):
-    """Main DH SP Tools UI."""
+class StackSlayer(QWidget):
+    """StackSlayer - Fast layer workflow tools."""
+    
     def __init__(self):
         super().__init__()
-        self.setObjectName("DHSPToolsUniqueName")
-        self.setWindowTitle("DH SP Tools")
-
+        self.setObjectName("StackSlayerWidget")
+        self.setWindowTitle("StackSlayer")
+        
         layout = QVBoxLayout()
-        scroll = QScrollArea(self); scroll.setWidgetResizable(True)
-        content = QWidget()
-        scroll_layout = QVBoxLayout(content)
-
-        # Fill Tools
-        fill_cat = CollapsibleCategory("Fill Tools")
+        layout.setSpacing(8)
         
-        # Create tooltip text
-        tooltip_text = "Default: White mask\nCtrl+Click: Black mask"
+        # === FILL LAYERS SECTION ===
+        fill_label = QLabel("Fill Layers")
+        fill_label.setStyleSheet("font-weight: bold; margin-top: 5px;")
+        layout.addWidget(fill_label)
         
-        for i, (label, chan) in enumerate([
-            ("Color Fill", "BaseColor"),
-            ("Roughness Fill", "Roughness"), 
-            ("Height Fill", "Height"),
-        ]):
-            btn = CtrlClickButton(
-                label,
-                lambda c=chan: self._add_layer_with_mask(c, white_mask=True),
-                lambda c=chan: self._add_layer_with_mask(c, white_mask=False)
-            )
-            btn.setToolTip(tooltip_text)
-            fill_cat.add_widget(btn, i, 0)
-
-        # Masking & Filters
-        filt_cat = CollapsibleCategory("Masking and Filters")
-        hsl_btn = QPushButton("Add HSL Filter")
-        hsl_btn.clicked.connect(self.add_hsl_filter_to_selected_layer)
-        filt_cat.add_widget(hsl_btn, 0, 0)
-
-        lvl_btn = QPushButton("Add Levels Filter")
-        lvl_btn.clicked.connect(self.add_levels_filter_to_selected_layer)
-        filt_cat.add_widget(lvl_btn, 1, 0)
-
-        scroll_layout.addWidget(fill_cat)
-        scroll_layout.addWidget(filt_cat)
-        scroll_layout.addStretch()
-        scroll.setWidget(content)
-
-        layout.addWidget(scroll)
+        fill_grid = QGridLayout()
+        fill_grid.setSpacing(3)
+        
+        # Row 0
+        self.color_btn = ModifierButton(
+            "Color",
+            lambda: self._add_fill_layer("Color", None),
+            lambda: self._add_fill_layer("Color", False),
+            lambda: self._add_fill_layer("Color", True)
+        )
+        self.color_btn.setToolTip("Click: No mask | Ctrl: Black mask | Shift: White mask")
+        
+        self.rough_btn = ModifierButton(
+            "Roughness", 
+            lambda: self._add_fill_layer("Roughness", None),
+            lambda: self._add_fill_layer("Roughness", False),
+            lambda: self._add_fill_layer("Roughness", True)
+        )
+        self.rough_btn.setToolTip("Click: No mask | Ctrl: Black mask | Shift: White mask")
+        
+        self.height_btn = ModifierButton(
+            "Height",
+            lambda: self._add_fill_layer("Height", None),
+            lambda: self._add_fill_layer("Height", False),
+            lambda: self._add_fill_layer("Height", True)
+        )
+        self.height_btn.setToolTip("Click: No mask | Ctrl: Black mask | Shift: White mask")
+        
+        fill_grid.addWidget(self.color_btn, 0, 0)
+        fill_grid.addWidget(self.rough_btn, 0, 1)
+        fill_grid.addWidget(self.height_btn, 0, 2)
+        
+        # Row 1
+        self.metal_btn = ModifierButton(
+            "Metallic",
+            lambda: self._add_fill_layer("Metallic", None),
+            lambda: self._add_fill_layer("Metallic", False),
+            lambda: self._add_fill_layer("Metallic", True)
+        )
+        self.metal_btn.setToolTip("Click: No mask | Ctrl: Black mask | Shift: White mask")
+        
+        self.normal_btn = ModifierButton(
+            "Normal",
+            lambda: self._add_fill_layer("Normal", None),
+            lambda: self._add_fill_layer("Normal", False),
+            lambda: self._add_fill_layer("Normal", True)
+        )
+        self.normal_btn.setToolTip("Click: No mask | Ctrl: Black mask | Shift: White mask")
+        
+        fill_grid.addWidget(self.metal_btn, 1, 0)
+        fill_grid.addWidget(self.normal_btn, 1, 1)
+        
+        layout.addLayout(fill_grid)
+        
+        # === EFFECTS SECTION ===
+        effects_label = QLabel("Effects")
+        effects_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        layout.addWidget(effects_label)
+        
+        effects_grid = QGridLayout()
+        effects_grid.setSpacing(3)
+        
+        self.hsl_btn = QPushButton("HSL")
+        self.hsl_btn.setToolTip("Add HSL Filter to selected layer")
+        self.hsl_btn.clicked.connect(self._add_hsl_filter)
+        
+        self.levels_btn = QPushButton("Levels")
+        self.levels_btn.setToolTip("Add Levels Filter to selected layer")
+        self.levels_btn.clicked.connect(self._add_levels_filter)
+        
+        self.blur_btn = QPushButton("Blur")
+        self.blur_btn.setToolTip("Add Blur Filter to selected layer")
+        self.blur_btn.clicked.connect(self._add_blur_filter)
+        
+        effects_grid.addWidget(self.hsl_btn, 0, 0)
+        effects_grid.addWidget(self.levels_btn, 0, 1)
+        effects_grid.addWidget(self.blur_btn, 0, 2)
+        
+        layout.addLayout(effects_grid)
+        
+        # === LAYER OPERATIONS SECTION ===
+        ops_label = QLabel("Layer Operations")
+        ops_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        layout.addWidget(ops_label)
+        
+        ops_grid = QGridLayout()
+        ops_grid.setSpacing(3)
+        
+        # Row 0: Generator, Fill, Paint
+        self.gen_btn = ModifierButton(
+            "Generator",
+            lambda: self._add_generator(None),      # Auto-detect
+            lambda: self._add_generator("content"),  # Ctrl = content
+            lambda: self._add_generator("mask")      # Shift = mask
+        )
+        self.gen_btn.setToolTip("Add Generator\nClick: Auto | Ctrl: Content | Shift: Mask")
+        
+        self.fill_effect_btn = ModifierButton(
+            "Fill",
+            lambda: self._add_fill_effect(None),
+            lambda: self._add_fill_effect("content"),
+            lambda: self._add_fill_effect("mask")
+        )
+        self.fill_effect_btn.setToolTip("Add Fill\nClick: Auto | Ctrl: Content | Shift: Mask")
+        
+        self.paint_effect_btn = ModifierButton(
+            "Paint",
+            lambda: self._add_paint_effect(None),
+            lambda: self._add_paint_effect("content"),
+            lambda: self._add_paint_effect("mask")
+        )
+        self.paint_effect_btn.setToolTip("Add Paint\nClick: Auto | Ctrl: Content | Shift: Mask")
+        
+        ops_grid.addWidget(self.gen_btn, 0, 0)
+        ops_grid.addWidget(self.fill_effect_btn, 0, 1)
+        ops_grid.addWidget(self.paint_effect_btn, 0, 2)
+        
+        # Row 1: Mask operations
+        self.black_mask_btn = QPushButton("Black Mask")
+        self.black_mask_btn.setToolTip("Add black mask to selected layer")
+        self.black_mask_btn.clicked.connect(lambda: self._add_mask(False))
+        
+        self.white_mask_btn = QPushButton("White Mask")
+        self.white_mask_btn.setToolTip("Add white mask to selected layer")
+        self.white_mask_btn.clicked.connect(lambda: self._add_mask(True))
+        
+        self.invert_mask_btn = QPushButton("Invert Mask")
+        self.invert_mask_btn.setToolTip("Invert mask of selected layer")
+        self.invert_mask_btn.clicked.connect(self._invert_mask)
+        
+        ops_grid.addWidget(self.black_mask_btn, 1, 0)
+        ops_grid.addWidget(self.white_mask_btn, 1, 1)
+        ops_grid.addWidget(self.invert_mask_btn, 1, 2)
+        
+        layout.addLayout(ops_grid)
+        
+        layout.addStretch()
         self.setLayout(layout)
-        self.setMinimumSize(300,300)
-        self.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding))
 
-    def _add_layer_with_mask(self, channel_name, white_mask=True):
-        mask_type = "white" if white_mask else "black"
-        print(f"➕ Adding {channel_name} fill layer w/ {mask_type} mask…")
+    def _add_fill_layer(self, channel_name, mask_type=None):
+        """Add fill layer with proper channel activation."""
+        mask_desc = "no mask" if mask_type is None else ("white mask" if mask_type else "black mask")
+        print(f"➕ Adding {channel_name} fill layer w/ {mask_desc}…")
+        
+        channel_mapping = {
+            "Color": textureset.ChannelType.BaseColor,
+            "Roughness": textureset.ChannelType.Roughness, 
+            "Height": textureset.ChannelType.Height,
+            "Normal": textureset.ChannelType.Normal,
+            "Metallic": textureset.ChannelType.Metallic
+        }
         
         try:
-            # Get active stack
             stack = textureset.get_active_stack()
-            root_nodes = layerstack.get_root_layer_nodes(stack)
+            position = layerstack.InsertPosition.from_textureset_stack(stack)
             
-            # Debug InsertPosition
-            print(f"🔍 InsertPosition type: {type(layerstack.InsertPosition)}")
-            print(f"🔍 InsertPosition methods: {[attr for attr in dir(layerstack.InsertPosition) if not attr.startswith('_')]}")
+            layer_node = layerstack.insert_fill(position)
+            layer_node.set_name(f"{channel_name} Fill")
             
-            # Try to create position properly
-            if root_nodes:
-                first_node = root_nodes[0]
-                print(f"🎯 Using first node UID: {first_node.uid()}")
+            if channel_name in channel_mapping:
+                layer_node.active_channels = {channel_mapping[channel_name]}
                 
-                # Try different position creation approaches
-                try:
-                    # Try with None (might mean "above")
-                    position = layerstack.InsertPosition(first_node.uid(), None)
-                    print(f"✅ Created position: {position}")
-                except Exception as pos_err:
-                    print(f"❌ Position creation failed: {pos_err}")
-                    return
-            else:
-                print("📭 No existing layers")
-                return
+                import substance_painter.colormanagement as colormanagement
+                white = colormanagement.Color(1.0, 1.0, 1.0)
+                layer_node.set_source(channel_mapping[channel_name], white)
             
-            # Create fill layer using the correct function
-            layer_uid = layerstack.insert_fill(position)
-            print(f"🆔 Created layer UID: {layer_uid}")
+            if mask_type is not None:
+                if mask_type:
+                    layer_node.add_mask(layerstack.MaskBackground.White)
+                else:
+                    layer_node.add_mask(layerstack.MaskBackground.Black)
             
-            # Get the layer node and add mask
-            layer_node = layerstack.get_node_by_uid(layer_uid)
-            print(f"🎯 Layer node: {layer_node}")
+            print(f"✅ {channel_name} fill layer created")
             
-            # Add mask
-            if white_mask:
-                print("🎭 Adding white mask...")
-                layer_node.add_mask(layerstack.MaskBackground.White)
-            else:
-                print("🎭 Adding black mask...")
-                layer_node.add_mask(layerstack.MaskBackground.Black)
-            
-            print(f"✅ Fill layer done ({mask_type} mask).")
         except Exception as e:
             import traceback
-            print(f"❌ Error creating layer: {e}")
-            print(f"🔧 Full traceback: {traceback.format_exc()}")
+            print(f"❌ Error: {e}")
+            print(traceback.format_exc())
 
-    def add_hsl_filter_to_selected_layer(self):
+    def _add_hsl_filter(self):
+        """Add HSL filter to selected layer."""
         try:
-            # Get selected nodes
             stack = textureset.get_active_stack()
             selected_nodes = layerstack.get_selected_nodes(stack)
             
             if not selected_nodes:
-                print("⚠️ No layer selected!")
+                print("⚠️ Select a layer first")
                 return
-                
-            layer = selected_nodes[0]  # Use first selected
-            print("➕ Adding HSL filter…")
             
-            # Check what HSL-related functions are available
-            # May need to use insert_levels_effect or similar
-            print("🔍 Checking available effect insertion functions...")
+            selected_layer = selected_nodes[0]
+            hsl_resources = resource.search("u:filter n:hsl")
             
-            print("✅ HSL filter added.")
+            if not hsl_resources:
+                print("❌ HSL filter not found")
+                return
+            
+            position = layerstack.InsertPosition.inside_node(selected_layer, layerstack.NodeStack.Content)
+            filter_node = layerstack.insert_filter_effect(position, hsl_resources[0].identifier())
+            
+            if hasattr(selected_layer, 'active_channels'):
+                filter_node.active_channels = selected_layer.active_channels
+            
+            print("✅ HSL filter added")
+            
         except Exception as e:
-            print(f"❌ Error adding HSL filter: {e}")
+            print(f"❌ Error: {e}")
 
-    def add_levels_filter_to_selected_layer(self):
+    def _add_levels_filter(self):
+        """Add Levels effect to selected layer."""
         try:
-            # Get selected nodes  
             stack = textureset.get_active_stack()
             selected_nodes = layerstack.get_selected_nodes(stack)
             
             if not selected_nodes:
-                print("⚠️ No layer selected!")
+                print("⚠️ Select a layer first")
                 return
-                
-            layer = selected_nodes[0]  # Use first selected
-            print("➕ Adding Levels filter…")
             
-            # Use the correct function name
-            layerstack.insert_levels_effect(layer)
+            selected_layer = selected_nodes[0]
+            position = layerstack.InsertPosition.inside_node(selected_layer, layerstack.NodeStack.Content)
+            levels_node = layerstack.insert_levels_effect(position)
             
-            print("✅ Levels filter added.")
+            if hasattr(selected_layer, 'active_channels') and selected_layer.active_channels:
+                first_channel = list(selected_layer.active_channels)[0]
+                levels_node.affected_channel = first_channel
+            
+            print("✅ Levels effect added")
+            
         except Exception as e:
-            print(f"❌ Error adding Levels filter: {e}")
+            print(f"❌ Error: {e}")
+
+    def _add_blur_filter(self):
+        """Add Blur filter to selected layer."""
+        try:
+            stack = textureset.get_active_stack()
+            selected_nodes = layerstack.get_selected_nodes(stack)
+            
+            if not selected_nodes:
+                print("⚠️ Select a layer first")
+                return
+            
+            selected_layer = selected_nodes[0]
+            blur_resources = resource.search("u:filter n:blur")
+            
+            if not blur_resources:
+                blur_resources = resource.search('s:starterassets u:filter n:Blur=')
+            
+            if not blur_resources:
+                print("❌ Blur filter not found")
+                return
+            
+            position = layerstack.InsertPosition.inside_node(selected_layer, layerstack.NodeStack.Content)
+            filter_node = layerstack.insert_filter_effect(position, blur_resources[0].identifier())
+            
+            if hasattr(selected_layer, 'active_channels'):
+                filter_node.active_channels = selected_layer.active_channels
+            
+            print("✅ Blur filter added")
+            
+        except Exception as e:
+            print(f"❌ Error: {e}")
+
+    def _add_generator(self, force_target=None):
+        """
+        Add generator effect.
+        Args:
+            force_target: None (auto-detect), "content", or "mask"
+        """
+        try:
+            stack = textureset.get_active_stack()
+            selected_nodes = layerstack.get_selected_nodes(stack)
+            
+            if not selected_nodes:
+                print("⚠️ Select a layer first")
+                return
+            
+            selected_node = selected_nodes[0]
+            parent = selected_node.get_parent()
+            
+            # Determine target based on force_target or context
+            if force_target == "mask":
+                in_mask = True
+                target_layer = selected_node if not parent else parent
+            elif force_target == "content":
+                in_mask = False
+                target_layer = selected_node
+            else:
+                # Auto-detect
+                in_mask = False
+                target_layer = selected_node
+                if parent and hasattr(parent, 'mask_effects'):
+                    mask_effects = parent.mask_effects()
+                    if selected_node in mask_effects:
+                        in_mask = True
+                        target_layer = parent
+            
+            if in_mask:
+                position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Mask)
+                gen_node = layerstack.insert_generator_effect(position)
+                print("✅ Generator added to mask")
+            else:
+                position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Content)
+                gen_node = layerstack.insert_generator_effect(position)
+                
+                if hasattr(target_layer, 'active_channels'):
+                    gen_node.active_channels = target_layer.active_channels
+                
+                print("✅ Generator added to content")
+            
+        except Exception as e:
+            print(f"❌ Error: {e}")
+
+    def _add_fill_effect(self, force_target=None):
+        """
+        Add fill effect.
+        Args:
+            force_target: None (auto-detect), "content", or "mask"
+        """
+        try:
+            stack = textureset.get_active_stack()
+            selected_nodes = layerstack.get_selected_nodes(stack)
+            
+            if not selected_nodes:
+                print("⚠️ Select a layer first")
+                return
+            
+            selected_node = selected_nodes[0]
+            parent = selected_node.get_parent()
+            
+            # Determine target based on force_target or context
+            if force_target == "mask":
+                in_mask = True
+                target_layer = selected_node if not parent else parent
+            elif force_target == "content":
+                in_mask = False
+                target_layer = selected_node
+            else:
+                # Auto-detect
+                in_mask = False
+                target_layer = selected_node
+                if parent and hasattr(parent, 'mask_effects'):
+                    mask_effects = parent.mask_effects()
+                    if selected_node in mask_effects:
+                        in_mask = True
+                        target_layer = parent
+            
+            if in_mask:
+                position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Mask)
+                fill_node = layerstack.insert_fill(position)
+                print("✅ Fill effect added to mask")
+            else:
+                position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Content)
+                fill_node = layerstack.insert_fill(position)
+                
+                if hasattr(target_layer, 'active_channels') and target_layer.active_channels:
+                    fill_node.active_channels = target_layer.active_channels
+                    
+                    import substance_painter.colormanagement as colormanagement
+                    white = colormanagement.Color(1.0, 1.0, 1.0)
+                    first_channel = list(target_layer.active_channels)[0]
+                    fill_node.set_source(first_channel, white)
+                
+                print("✅ Fill effect added to content")
+            
+        except Exception as e:
+            import traceback
+            print(f"❌ Error: {e}")
+            print(traceback.format_exc())
+
+    def _add_paint_effect(self, force_target=None):
+        """
+        Add paint effect.
+        Args:
+            force_target: None (auto-detect), "content", or "mask"
+        """
+        try:
+            stack = textureset.get_active_stack()
+            selected_nodes = layerstack.get_selected_nodes(stack)
+            
+            if not selected_nodes:
+                print("⚠️ Select a layer first")
+                return
+            
+            selected_node = selected_nodes[0]
+            parent = selected_node.get_parent()
+            
+            # Determine target based on force_target or context
+            if force_target == "mask":
+                in_mask = True
+                target_layer = selected_node if not parent else parent
+            elif force_target == "content":
+                in_mask = False
+                target_layer = selected_node
+            else:
+                # Auto-detect
+                in_mask = False
+                target_layer = selected_node
+                if parent and hasattr(parent, 'mask_effects'):
+                    mask_effects = parent.mask_effects()
+                    if selected_node in mask_effects:
+                        in_mask = True
+                        target_layer = parent
+            
+            if in_mask:
+                position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Mask)
+                paint_node = layerstack.insert_paint(position)
+                print("✅ Paint effect added to mask")
+            else:
+                position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Content)
+                paint_node = layerstack.insert_paint(position)
+                
+                if hasattr(target_layer, 'active_channels'):
+                    paint_node.active_channels = target_layer.active_channels
+                
+                print("✅ Paint effect added to content")
+            
+        except Exception as e:
+            import traceback
+            print(f"❌ Error: {e}")
+            print(traceback.format_exc())
+
+    def _add_mask(self, white_mask):
+        """Add mask to selected layer."""
+        try:
+            stack = textureset.get_active_stack()
+            selected_nodes = layerstack.get_selected_nodes(stack)
+            
+            if not selected_nodes:
+                print("⚠️ Select a layer first")
+                return
+            
+            selected_layer = selected_nodes[0]
+            
+            if not hasattr(selected_layer, 'add_mask'):
+                print("⚠️ Selected node can't have a mask")
+                return
+            
+            if selected_layer.has_mask():
+                print("⚠️ Layer already has a mask")
+                return
+            
+            if white_mask:
+                selected_layer.add_mask(layerstack.MaskBackground.White)
+                print("✅ White mask added")
+            else:
+                selected_layer.add_mask(layerstack.MaskBackground.Black)
+                print("✅ Black mask added")
+            
+        except Exception as e:
+            print(f"❌ Error: {e}")
+
+    def _invert_mask(self):
+        """Invert mask by adding invert filter to mask stack."""
+        try:
+            stack = textureset.get_active_stack()
+            selected_nodes = layerstack.get_selected_nodes(stack)
+            
+            if not selected_nodes:
+                print("⚠️ Select a layer first")
+                return
+            
+            selected_layer = selected_nodes[0]
+            
+            if not hasattr(selected_layer, 'has_mask') or not selected_layer.has_mask():
+                print("⚠️ Layer has no mask to invert")
+                return
+            
+            # Add invert filter to bottom of mask stack
+            position = layerstack.InsertPosition.inside_node(selected_layer, layerstack.NodeStack.Mask)
+            
+            # Search for invert filter
+            invert_resources = resource.search("u:filter n:invert")
+            if not invert_resources:
+                invert_resources = resource.search("s:starterassets u:filter n:Invert")
+            
+            if not invert_resources:
+                print("❌ Invert filter not found")
+                return
+            
+            layerstack.insert_filter_effect(position, invert_resources[0].identifier())
+            print("✅ Mask inverted (added Invert filter)")
+            
+        except Exception as e:
+            print(f"❌ Error: {e}")
 
 def start_plugin():
-    print("🔌 Starting DH SP Tools…")
-    widget = DHSPTools()
-    dock = substance_painter.ui.add_dock_widget(
-        widget,
-        UIMode.Edition | UIMode.Baking
-    )
-    _plugin_refs.extend([widget, dock])
-    print("🎉 DH SP Tools started!")
+    """Initialize and show the plugin."""
+    global _plugin_refs
+    
+    widget = StackSlayer()
+    substance_painter.ui.add_dock_widget(widget, UIMode.Edition)
+    _plugin_refs.append(widget)
+    
+    print("🚀 StackSlayer loaded")
 
 def close_plugin():
-    print("🛑 Closing DH SP Tools…")
+    """Clean up when plugin is closed."""
+    global _plugin_refs
+    
+    for widget in _plugin_refs:
+        substance_painter.ui.delete_ui_element(widget)
+    
     _plugin_refs.clear()
+    print("👋 StackSlayer unloaded")
+
+if __name__ == "__main__":
+    start_plugin()
