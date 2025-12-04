@@ -1,14 +1,20 @@
 # stack_slayer.py
 
+import os
+import sys
+import subprocess
+from pathlib import Path
+
 import substance_painter.ui
 from substance_painter.ui import UIMode
 import substance_painter.layerstack as layerstack
 import substance_painter.textureset as textureset
 import substance_painter.resource as resource
+import substance_painter.project as project
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QHBoxLayout, QGridLayout, 
-    QCheckBox, QApplication, QLabel, QToolButton, QFrame
+    QWidget, QVBoxLayout, QPushButton, QHBoxLayout, QGridLayout,
+    QCheckBox, QApplication, QLabel, QToolButton, QFrame, QScrollArea
 )
 from PySide6.QtCore import Qt
 
@@ -33,13 +39,14 @@ class CollapsibleSection(QWidget):
         self.header_btn.setStyleSheet("""
             QToolButton {
                 border: none;
-                background: palette(button);
+                background: transparent;
                 padding: 4px;
                 font-weight: bold;
                 text-align: left;
+                color: palette(text);
             }
             QToolButton:hover {
-                background: palette(midlight);
+                background: rgba(255, 255, 255, 0.1);
             }
         """)
         self.header_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
@@ -100,9 +107,16 @@ class StackSlayer(QWidget):
         super().__init__()
         self.setObjectName("StackSlayerWidget")
         self.setWindowTitle("StackSlayer")
-        self.setMinimumWidth(200)
+        self.setMinimumWidth(150)
         self.setMaximumWidth(400)
-        
+
+        # Create scroll area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        # Create content widget
+        content_widget = QWidget()
         layout = QVBoxLayout()
         layout.setSpacing(4)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -267,50 +281,88 @@ class StackSlayer(QWidget):
         self.anchor_btn.setToolTip("Add Anchor Point\nClick: Auto | Ctrl: Content | Shift: Mask")
         
         ops_grid.addWidget(self.anchor_btn, 2, 0, 1, 3)  # Span all 3 columns
-        
+
         ops_section.add_layout(ops_grid)
         layout.addWidget(ops_section)
-        
+
+        # === UTILITIES SECTION ===
+        utils_section = CollapsibleSection("Utilities")
+
+        utils_layout = QVBoxLayout()
+        utils_layout.setSpacing(2)
+
+        self.open_folder_btn = QPushButton("📁 Open Project Folder")
+        self.open_folder_btn.setMaximumHeight(24)
+        self.open_folder_btn.setToolTip("Open the current project folder in file explorer")
+        self.open_folder_btn.clicked.connect(self._open_project_folder)
+
+        self.save_incremental_btn = QPushButton("💾 Save Incremental")
+        self.save_incremental_btn.setMaximumHeight(24)
+        self.save_incremental_btn.setToolTip("Save project with incremented version number (v01 → v02)")
+        self.save_incremental_btn.clicked.connect(self._save_incremental)
+
+        utils_layout.addWidget(self.open_folder_btn)
+        utils_layout.addWidget(self.save_incremental_btn)
+
+        utils_section.add_layout(utils_layout)
+        layout.addWidget(utils_section)
+
         # Push everything to top
         layout.addStretch()
-        
-        self.setLayout(layout)
+
+        # Set layout to content widget and add to scroll area
+        content_widget.setLayout(layout)
+        scroll.setWidget(content_widget)
+
+        # Set scroll area as main layout
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(scroll)
+        self.setLayout(main_layout)
 
     def _add_fill_layer(self, channel_name, mask_type=None):
         """Add fill layer with proper channel activation."""
         mask_desc = "no mask" if mask_type is None else ("white mask" if mask_type else "black mask")
         print(f"➕ Adding {channel_name} fill layer w/ {mask_desc}…")
-        
+
         channel_mapping = {
             "Color": textureset.ChannelType.BaseColor,
-            "Roughness": textureset.ChannelType.Roughness, 
+            "Roughness": textureset.ChannelType.Roughness,
             "Height": textureset.ChannelType.Height,
             "Normal": textureset.ChannelType.Normal,
             "Metallic": textureset.ChannelType.Metallic
         }
-        
+
         try:
             stack = textureset.get_active_stack()
-            position = layerstack.InsertPosition.from_textureset_stack(stack)
-            
+            selected = layerstack.get_selected_nodes(stack)
+
+            # Insert at selected position if available, otherwise at top
+            if selected:
+                position = layerstack.InsertPosition.above_node(selected[0])
+            else:
+                position = layerstack.InsertPosition.from_textureset_stack(stack)
+
             layer_node = layerstack.insert_fill(position)
             layer_node.set_name(f"{channel_name} Fill")
-            
+
             if channel_name in channel_mapping:
                 layer_node.active_channels = {channel_mapping[channel_name]}
-                
+
                 import substance_painter.colormanagement as colormanagement
                 white = colormanagement.Color(1.0, 1.0, 1.0)
                 layer_node.set_source(channel_mapping[channel_name], white)
-            
+
             if mask_type is not None:
                 if mask_type:
                     layer_node.add_mask(layerstack.MaskBackground.White)
                 else:
                     layer_node.add_mask(layerstack.MaskBackground.Black)
-            
+
+            # Select the newly created layer
+            layerstack.set_selected_nodes(stack, [layer_node])
             print(f"✅ {channel_name} fill layer created")
-            
+
         except Exception as e:
             import traceback
             print(f"❌ Error: {e}")
@@ -355,13 +407,15 @@ class StackSlayer(QWidget):
             
             if in_mask:
                 position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Mask)
-                layerstack.insert_filter_effect(position, hsl_resources[0].identifier())
+                filter_node = layerstack.insert_filter_effect(position, hsl_resources[0].identifier())
+                layerstack.set_selected_nodes(stack, [filter_node])
                 print("✅ HSL filter added to mask")
             else:
                 position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Content)
                 filter_node = layerstack.insert_filter_effect(position, hsl_resources[0].identifier())
                 if hasattr(target_layer, 'active_channels'):
                     filter_node.active_channels = target_layer.active_channels
+                layerstack.set_selected_nodes(stack, [filter_node])
                 print("✅ HSL filter added to content")
             
         except Exception as e:
@@ -401,7 +455,8 @@ class StackSlayer(QWidget):
             
             if in_mask:
                 position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Mask)
-                layerstack.insert_levels_effect(position)
+                levels_node = layerstack.insert_levels_effect(position)
+                layerstack.set_selected_nodes(stack, [levels_node])
                 print("✅ Levels effect added to mask")
             else:
                 position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Content)
@@ -409,6 +464,7 @@ class StackSlayer(QWidget):
                 if hasattr(target_layer, 'active_channels') and target_layer.active_channels:
                     first_channel = list(target_layer.active_channels)[0]
                     levels_node.affected_channel = first_channel
+                layerstack.set_selected_nodes(stack, [levels_node])
                 print("✅ Levels effect added to content")
             
         except Exception as e:
@@ -455,13 +511,15 @@ class StackSlayer(QWidget):
             
             if in_mask:
                 position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Mask)
-                layerstack.insert_filter_effect(position, blur_resources[0].identifier())
+                filter_node = layerstack.insert_filter_effect(position, blur_resources[0].identifier())
+                layerstack.set_selected_nodes(stack, [filter_node])
                 print("✅ Blur filter added to mask")
             else:
                 position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Content)
                 filter_node = layerstack.insert_filter_effect(position, blur_resources[0].identifier())
                 if hasattr(target_layer, 'active_channels'):
                     filter_node.active_channels = target_layer.active_channels
+                layerstack.set_selected_nodes(stack, [filter_node])
                 print("✅ Blur filter added to content")
             
         except Exception as e:
@@ -503,15 +561,17 @@ class StackSlayer(QWidget):
                 # Add to mask stack
                 position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Mask)
                 gen_node = layerstack.insert_generator_effect(position)
+                layerstack.set_selected_nodes(stack, [gen_node])
                 print("✅ Generator added to mask")
             else:
                 # Add to content stack
                 position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Content)
                 gen_node = layerstack.insert_generator_effect(position)
-                
+
                 if hasattr(target_layer, 'active_channels'):
                     gen_node.active_channels = target_layer.active_channels
-                
+
+                layerstack.set_selected_nodes(stack, [gen_node])
                 print("✅ Generator added to content")
             
         except Exception as e:
@@ -553,21 +613,23 @@ class StackSlayer(QWidget):
                 # Add to mask stack
                 position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Mask)
                 fill_node = layerstack.insert_fill(position)
+                layerstack.set_selected_nodes(stack, [fill_node])
                 print("✅ Fill effect added to mask")
             else:
                 # Add to content stack
                 position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Content)
                 fill_node = layerstack.insert_fill(position)
-                
+
                 # Set white color and match channels for content
                 if hasattr(target_layer, 'active_channels') and target_layer.active_channels:
                     fill_node.active_channels = target_layer.active_channels
-                    
+
                     import substance_painter.colormanagement as colormanagement
                     white = colormanagement.Color(1.0, 1.0, 1.0)
                     first_channel = list(target_layer.active_channels)[0]
                     fill_node.set_source(first_channel, white)
-                
+
+                layerstack.set_selected_nodes(stack, [fill_node])
                 print("✅ Fill effect added to content")
             
         except Exception as e:
@@ -611,15 +673,17 @@ class StackSlayer(QWidget):
                 # Add to mask stack
                 position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Mask)
                 paint_node = layerstack.insert_paint(position)
+                layerstack.set_selected_nodes(stack, [paint_node])
                 print("✅ Paint effect added to mask")
             else:
                 # Add to content stack
                 position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Content)
                 paint_node = layerstack.insert_paint(position)
-                
+
                 if hasattr(target_layer, 'active_channels'):
                     paint_node.active_channels = target_layer.active_channels
-                
+
+                layerstack.set_selected_nodes(stack, [paint_node])
                 print("✅ Paint effect added to content")
             
         except Exception as e:
@@ -726,17 +790,114 @@ class StackSlayer(QWidget):
             if in_mask:
                 # Add to mask stack
                 position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Mask)
-                layerstack.insert_anchor_point_effect(position, "Anchor Point")
+                anchor_node = layerstack.insert_anchor_point_effect(position, "Anchor Point")
+                layerstack.set_selected_nodes(stack, [anchor_node])
                 print("✅ Anchor point added to mask")
             else:
                 # Add to content stack
                 position = layerstack.InsertPosition.inside_node(target_layer, layerstack.NodeStack.Content)
-                layerstack.insert_anchor_point_effect(position, "Anchor Point")
+                anchor_node = layerstack.insert_anchor_point_effect(position, "Anchor Point")
+                layerstack.set_selected_nodes(stack, [anchor_node])
                 print("✅ Anchor point added to content")
             
         except Exception as e:
             import traceback
             print(f"❌ Error: {e}")
+            print(traceback.format_exc())
+
+    def _open_project_folder(self):
+        """Open the current project folder in the system file explorer."""
+        try:
+            # Get the project file path
+            project_file = project.file_path()
+
+            if not project_file:
+                print("⚠️ No project is currently open")
+                return
+
+            # Get the directory containing the project file
+            project_dir = Path(project_file).parent
+
+            if not project_dir.exists():
+                print(f"⚠️ Project directory doesn't exist: {project_dir}")
+                return
+
+            # Open in file explorer based on platform
+            if sys.platform == 'win32':
+                # Windows
+                os.startfile(project_dir)
+                print(f"📁 Opened folder: {project_dir}")
+            elif sys.platform == 'darwin':
+                # macOS
+                subprocess.run(['open', str(project_dir)])
+                print(f"📁 Opened folder: {project_dir}")
+            else:
+                # Linux and other Unix-like systems
+                subprocess.run(['xdg-open', str(project_dir)])
+                print(f"📁 Opened folder: {project_dir}")
+
+        except Exception as e:
+            print(f"❌ Error opening folder: {e}")
+
+    def _save_incremental(self):
+        """Save project with incremented version number."""
+        try:
+            import re
+
+            # Get current project file path
+            try:
+                current_file = project.file_path()
+            except:
+                print("⚠️ No project is currently open")
+                return
+
+            if not current_file:
+                print("⚠️ Project has not been saved yet. Please save it first.")
+                return
+
+            current_path = Path(current_file)
+            current_name = current_path.stem  # Filename without extension
+            current_dir = current_path.parent
+            current_ext = current_path.suffix  # .spp
+
+            # Match version pattern: v01, v02, v001, v002, etc.
+            version_pattern = re.compile(r'(.+)_v(\d{2,3})$', re.IGNORECASE)
+            match = version_pattern.match(current_name)
+
+            if not match:
+                print("⚠️ No version number found in filename. Expected format: name_v01 or name_v001")
+                return
+
+            base_name = match.group(1)
+            current_version_str = match.group(2)
+            current_version = int(current_version_str)
+
+            # Determine if using 2-digit or 3-digit format
+            digit_count = len(current_version_str)
+
+            # Increment version
+            next_version = current_version + 1
+            next_version_str = str(next_version).zfill(digit_count)
+
+            # Build new filename
+            new_name = f"{base_name}_v{next_version_str}{current_ext}"
+            new_path = current_dir / new_name
+
+            # Check if file already exists
+            if new_path.exists():
+                print(f"⚠️ File already exists: {new_name}")
+                print(f"   Please delete it first or increment manually")
+                return
+
+            # Save as new version
+            project.save_as(str(new_path))
+
+            print(f"✅ Saved incremental: {new_name}")
+            print(f"   v{current_version_str} → v{next_version_str}")
+
+        except Exception as e:
+            import traceback
+            print(f"❌ Error saving incremental: {e}")
             print(traceback.format_exc())
 
 def start_plugin():

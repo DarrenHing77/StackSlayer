@@ -1,14 +1,16 @@
 """
 DH SP Tools - Custom Substance Painter Tools
 Author: Your Name
-Version: 1.2
+Version: 1.3
 """
 
 import json
 import os
 from pathlib import Path
 
-from PySide6.QtWidgets import QWidget, QLabel, QGraphicsOpacityEffect
+from PySide6.QtWidgets import (QWidget, QLabel, QGraphicsOpacityEffect, QDialog,
+                               QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit,
+                               QPushButton, QMessageBox)
 from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QAction, QKeySequence
 
@@ -27,9 +29,12 @@ class ConfigManager:
     DEFAULT_CONFIG = {
         "hotkeys": {
             "cycle_texture_set_up": "Ctrl+Shift+W",
-            "cycle_texture_set_down": "Ctrl+Shift+E",
-            "cycle_layer_up": "Shift+W",
-            "cycle_layer_down": "Shift+E"
+            "cycle_texture_set_down": "Ctrl+Shift+S",
+            "cycle_layer_up": "Ctrl+W",
+            "cycle_layer_down": "Ctrl+S",
+            "cycle_effect_up": "Ctrl+Shift+Q",
+            "cycle_effect_down": "Ctrl+Shift+A",
+            "toggle_mask_content": "`"
         }
     }
     
@@ -67,6 +72,120 @@ class ConfigManager:
     def get_hotkey(self, action_name):
         """Get hotkey for an action."""
         return self.config.get("hotkeys", {}).get(action_name, "")
+
+    def update_hotkey(self, action_name, new_hotkey):
+        """Update a hotkey and save the config."""
+        if "hotkeys" not in self.config:
+            self.config["hotkeys"] = {}
+        self.config["hotkeys"][action_name] = new_hotkey
+        self.save_config(self.config)
+
+
+# ============================================================================
+# SETTINGS DIALOG
+# ============================================================================
+
+class SettingsDialog(QDialog):
+    """Dialog for editing plugin hotkeys."""
+
+    def __init__(self, config_manager, parent=None):
+        super().__init__(parent)
+        self.config = config_manager
+        self.setWindowTitle("DH SP Tools - Hotkey Settings")
+        self.setMinimumWidth(500)
+
+        # Store input fields
+        self.hotkey_inputs = {}
+
+        # Setup UI
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Create the settings UI."""
+        layout = QVBoxLayout(self)
+
+        # Instructions
+        instructions = QLabel(
+            "Edit hotkeys below. Use format like 'Ctrl+W', 'Shift+A', '`', etc.\n"
+            "Changes require plugin reload to take effect."
+        )
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
+        # Form for hotkeys
+        form_layout = QFormLayout()
+
+        # Define friendly names for each action
+        action_labels = {
+            "cycle_texture_set_up": "Cycle Texture Set Up:",
+            "cycle_texture_set_down": "Cycle Texture Set Down:",
+            "cycle_layer_up": "Cycle Layer Up:",
+            "cycle_layer_down": "Cycle Layer Down:",
+            "cycle_effect_up": "Cycle Effect Up:",
+            "cycle_effect_down": "Cycle Effect Down:",
+            "toggle_mask_content": "Toggle Mask/Content:"
+        }
+
+        # Create input field for each hotkey
+        for action_name, label_text in action_labels.items():
+            current_hotkey = self.config.get_hotkey(action_name)
+            input_field = QLineEdit(current_hotkey)
+            input_field.setPlaceholderText("e.g., Ctrl+W, Shift+A, `")
+            self.hotkey_inputs[action_name] = input_field
+            form_layout.addRow(label_text, input_field)
+
+        layout.addLayout(form_layout)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+
+        reset_button = QPushButton("Reset to Defaults")
+        reset_button.clicked.connect(self.reset_to_defaults)
+        button_layout.addWidget(reset_button)
+
+        button_layout.addStretch()
+
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_button)
+
+        save_button = QPushButton("Save")
+        save_button.setDefault(True)
+        save_button.clicked.connect(self.save_settings)
+        button_layout.addWidget(save_button)
+
+        layout.addLayout(button_layout)
+
+    def reset_to_defaults(self):
+        """Reset all hotkeys to default values."""
+        reply = QMessageBox.question(
+            self,
+            "Reset to Defaults",
+            "Reset all hotkeys to default values?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            for action_name, input_field in self.hotkey_inputs.items():
+                default_hotkey = ConfigManager.DEFAULT_CONFIG["hotkeys"].get(action_name, "")
+                input_field.setText(default_hotkey)
+
+    def save_settings(self):
+        """Save the hotkey settings."""
+        # Update config with new values
+        for action_name, input_field in self.hotkey_inputs.items():
+            new_hotkey = input_field.text().strip()
+            self.config.update_hotkey(action_name, new_hotkey)
+
+        QMessageBox.information(
+            self,
+            "Settings Saved",
+            "Hotkey settings saved!\n\nPlease reload the plugin for changes to take effect:\n"
+            "Python → DH SP Tools → Reload Plugin"
+        )
+
+        self.accept()
 
 
 # ============================================================================
@@ -314,27 +433,17 @@ class LayerCycler:
             self.overlay.show_message(f"❌ Error: {str(e)}", 2000)
     
     def _get_all_layers(self, stack):
-        """Recursively get all layers in a stack (including nested)."""
+        """Get all layers and groups in a stack at the current level only."""
         layers = []
-        
-        def traverse(node):
-            layers.append(node)
-            # Check if it's a group and traverse children
-            if hasattr(node, 'children'):
-                try:
-                    for child in reversed(node.children()):  # Reversed for top-to-bottom order
-                        traverse(child)
-                except:
-                    pass
-        
-        # Start from root - USE THE CORRECT FUNCTION
+
+        # Get root level nodes only, don't traverse into groups
         try:
             root_nodes = layerstack.get_root_layer_nodes(stack)
-            for node in reversed(root_nodes):
-                traverse(node)
+            # Reversed for top-to-bottom order
+            layers = list(reversed(root_nodes))
         except Exception as e:
-            print(f"Error traversing layers: {e}")
-        
+            print(f"Error getting layers: {e}")
+
         return layers
     
     def cleanup(self):
@@ -346,6 +455,192 @@ class LayerCycler:
 
 
 # ============================================================================
+# EFFECT CYCLER (NEW)
+# ============================================================================
+
+class EffectCycler:
+    """Handles cycling through effects in a layer."""
+    
+    def __init__(self, overlay_widget, config_manager):
+        self.overlay = overlay_widget
+        self.config = config_manager
+        self.action_up = None
+        self.action_down = None
+    
+    def setup_hotkeys(self):
+        """Register the hotkey actions."""
+        hotkey_up = self.config.get_hotkey("cycle_effect_up")
+        hotkey_down = self.config.get_hotkey("cycle_effect_down")
+        
+        # Up action
+        self.action_up = QAction("Cycle Effect Up")
+        self.action_up.setShortcut(QKeySequence(hotkey_up))
+        self.action_up.triggered.connect(self.cycle_up)
+        ui.add_action(ui.ApplicationMenu.Edit, self.action_up)
+        
+        # Down action
+        self.action_down = QAction("Cycle Effect Down")
+        self.action_down.setShortcut(QKeySequence(hotkey_down))
+        self.action_down.triggered.connect(self.cycle_down)
+        ui.add_action(ui.ApplicationMenu.Edit, self.action_down)
+        
+        print(f"  - {hotkey_up}: Cycle Effect Up")
+        print(f"  - {hotkey_down}: Cycle Effect Down")
+    
+    def cycle_up(self):
+        """Cycle to previous effect."""
+        self._cycle_effect(-1)
+    
+    def cycle_down(self):
+        """Cycle to next effect."""
+        self._cycle_effect(1)
+    
+    def _cycle_effect(self, direction):
+        """Cycle through effects and filters by direction (+1 or -1)."""
+        try:
+            stack = textureset.get_active_stack()
+            selected = layerstack.get_selected_nodes(stack)
+
+            if not selected:
+                self.overlay.show_message("⚠️ Select a layer first", 1500)
+                return
+
+            current_node = selected[0]
+
+            # Get parent layer if we're already on an effect
+            parent = current_node.get_parent()
+            if parent and hasattr(parent, 'content_effects'):
+                target_layer = parent
+            else:
+                target_layer = current_node
+
+            # Determine if we're in mask mode
+            selection_type = layerstack.get_selection_type(target_layer)
+            is_mask_mode = selection_type == layerstack.SelectionType.Mask
+
+            # Gather effects based on selection type
+            # Note: content_effects() and mask_effects() return ALL effect types
+            # including Fill, Paint, Filter, Generator, etc.
+            all_items = []
+            content_items = []
+            mask_items = []
+
+            if is_mask_mode:
+                # When mask is selected, cycle through mask effects only
+                if hasattr(target_layer, 'mask_effects'):
+                    mask_items = target_layer.mask_effects()
+                all_items = mask_items
+            else:
+                # When content is selected, cycle through both content and mask effects
+                if hasattr(target_layer, 'content_effects'):
+                    content_items = target_layer.content_effects()
+                if hasattr(target_layer, 'mask_effects'):
+                    mask_items = target_layer.mask_effects()
+                all_items = content_items + mask_items
+
+            if not all_items:
+                location = "mask" if is_mask_mode else "layer"
+                self.overlay.show_message(f"⚠️ No effects/filters in {location}", 1500)
+                return
+
+            # Find current item index
+            try:
+                current_idx = all_items.index(current_node)
+                new_idx = (current_idx + direction) % len(all_items)
+            except ValueError:
+                # If current node isn't in the list, select first item
+                new_idx = 0
+
+            # Select the item
+            new_item = all_items[new_idx]
+            layerstack.set_selected_nodes([new_item])
+
+            # Show overlay
+            item_name = new_item.get_name()
+            item_type = type(new_item).__name__.replace("Effect", "").replace("Filter", "").replace("Node", "")
+            is_mask = new_item in mask_items
+            location = "Mask" if is_mask else "Content"
+            direction_arrow = "⬆️" if direction < 0 else "⬇️"
+            message = f"{direction_arrow} {item_name} ({item_type} - {location})"
+            self.overlay.show_message(message, 1500)
+
+        except Exception as e:
+            self.overlay.show_message(f"❌ Error: {str(e)}", 2000)
+    
+    def cleanup(self):
+        """Remove the actions when plugin closes."""
+        if self.action_up:
+            ui.delete_ui_element(self.action_up)
+        if self.action_down:
+            ui.delete_ui_element(self.action_down)
+
+
+# ============================================================================
+# MASK/CONTENT TOGGLER (NEW)
+# ============================================================================
+
+class MaskContentToggler:
+    """Handles toggling between mask and content selection."""
+    
+    def __init__(self, overlay_widget, config_manager):
+        self.overlay = overlay_widget
+        self.config = config_manager
+        self.action = None
+    
+    def setup_hotkeys(self):
+        """Register the hotkey action."""
+        hotkey = self.config.get_hotkey("toggle_mask_content")
+        
+        self.action = QAction("Toggle Mask/Content")
+        self.action.setShortcut(QKeySequence(hotkey))
+        self.action.triggered.connect(self.toggle)
+        ui.add_action(ui.ApplicationMenu.Edit, self.action)
+        
+        print(f"  - {hotkey}: Toggle Mask/Content")
+    
+    def toggle(self):
+        """Toggle between mask and content selection."""
+        try:
+            stack = textureset.get_active_stack()
+            selected = layerstack.get_selected_nodes(stack)
+
+            if not selected:
+                self.overlay.show_message("⚠️ Select a layer first", 1500)
+                return
+
+            layer = selected[0]
+
+            if not hasattr(layer, 'has_mask'):
+                self.overlay.show_message("⚠️ Layer doesn't support masks", 1500)
+                return
+
+            current_type = layerstack.get_selection_type(layer)
+
+            # Toggle logic
+            if current_type == layerstack.SelectionType.Content:
+                if layer.has_mask():
+                    layerstack.set_selection_type(layer, layerstack.SelectionType.Mask)
+                    self.overlay.show_message("🎭 Switched to Mask", 1500)
+                else:
+                    self.overlay.show_message("⚠️ Layer has no mask", 1500)
+            elif current_type == layerstack.SelectionType.Mask:
+                layerstack.set_selection_type(layer, layerstack.SelectionType.Content)
+                self.overlay.show_message("🎨 Switched to Content", 1500)
+            else:
+                # Default to content if in properties or other state
+                layerstack.set_selection_type(layer, layerstack.SelectionType.Content)
+                self.overlay.show_message("🎨 Switched to Content", 1500)
+
+        except Exception as e:
+            self.overlay.show_message(f"❌ Error: {str(e)}", 2000)
+    
+    def cleanup(self):
+        """Remove the action when plugin closes."""
+        if self.action:
+            ui.delete_ui_element(self.action)
+
+
+# ============================================================================
 # PLUGIN MAIN
 # ============================================================================
 
@@ -353,50 +648,89 @@ _plugin_overlay = None
 _plugin_config = None
 _plugin_texture_cycler = None
 _plugin_layer_cycler = None
+_plugin_effect_cycler = None
+_plugin_mask_toggler = None
+_plugin_settings_action = None
+
+
+def show_settings_dialog():
+    """Show the hotkey settings dialog."""
+    global _plugin_config
+    if _plugin_config:
+        dialog = SettingsDialog(_plugin_config, ui.get_main_window())
+        dialog.exec()
 
 
 def start_plugin():
     """Called when plugin is loaded."""
     global _plugin_overlay, _plugin_config, _plugin_texture_cycler, _plugin_layer_cycler
-    
+    global _plugin_effect_cycler, _plugin_mask_toggler, _plugin_settings_action
+
     # Load config
     _plugin_config = ConfigManager()
-    
+
     # Get main window
     main_window = ui.get_main_window()
-    
+
     # Create overlay
     _plugin_overlay = ViewportOverlay(main_window)
-    
+
     # Create texture set cycler
     _plugin_texture_cycler = TextureSetCycler(_plugin_overlay, _plugin_config)
     _plugin_texture_cycler.setup_hotkeys()
-    
+
     # Create layer cycler
     _plugin_layer_cycler = LayerCycler(_plugin_overlay, _plugin_config)
     _plugin_layer_cycler.setup_hotkeys()
-    
+
+    # Create effect cycler (NEW)
+    _plugin_effect_cycler = EffectCycler(_plugin_overlay, _plugin_config)
+    _plugin_effect_cycler.setup_hotkeys()
+
+    # Create mask/content toggler (NEW)
+    _plugin_mask_toggler = MaskContentToggler(_plugin_overlay, _plugin_config)
+    _plugin_mask_toggler.setup_hotkeys()
+
+    # Add settings menu item
+    _plugin_settings_action = QAction("DH SP Tools Settings...")
+    _plugin_settings_action.triggered.connect(show_settings_dialog)
+    ui.add_action(ui.ApplicationMenu.Edit, _plugin_settings_action)
+
     print("DH SP Tools: Plugin loaded ✓")
+    print("  Access settings via: Edit → DH SP Tools Settings...")
 
 
 def close_plugin():
     """Called when plugin is unloaded."""
     global _plugin_overlay, _plugin_config, _plugin_texture_cycler, _plugin_layer_cycler
-    
+    global _plugin_effect_cycler, _plugin_mask_toggler, _plugin_settings_action
+
     if _plugin_texture_cycler:
         _plugin_texture_cycler.cleanup()
         _plugin_texture_cycler = None
-    
+
     if _plugin_layer_cycler:
         _plugin_layer_cycler.cleanup()
         _plugin_layer_cycler = None
-    
+
+    if _plugin_effect_cycler:
+        _plugin_effect_cycler.cleanup()
+        _plugin_effect_cycler = None
+
+    if _plugin_mask_toggler:
+        _plugin_mask_toggler.cleanup()
+        _plugin_mask_toggler = None
+
+    if _plugin_settings_action:
+        ui.delete_ui_element(_plugin_settings_action)
+        _plugin_settings_action = None
+
     if _plugin_overlay:
         _plugin_overlay.deleteLater()
         _plugin_overlay = None
-    
+
     _plugin_config = None
-    
+
     print("DH SP Tools: Plugin unloaded")
 
 
